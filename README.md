@@ -22,7 +22,7 @@ TQQQ / SGOV 1:1 自動再平衡，透過 Robinhood Agentic Trading MCP。
 再平衡時兩腿的目標金額 = `(現金 + TQQQ 總值 + SGOV 總值) / 2`。
 也就是說 —— 再平衡會把所有現金一起投入，達到 1:1 後現金歸零。
 
-下單方式：marketable limit 單（賣單掛 bid × 0.995，買單掛 ask × 1.005），整數股。
+下單方式：預設 **市價單 + fractional 股**（精準部署任何金額）；可在 `main_bot.py` 改 `ORDER_TYPE` 切回限價單模式（整數股 + 「最差成交價」保護）。詳見 [rebalance.md](rebalance.md)。
 
 ---
 

@@ -29,15 +29,29 @@ target = (vt + vs + cash) / 2
 
 ## 下單方式（`main_bot.py`）
 
-Marketable limit + 整數股：
+由 `ORDER_TYPE` 常數切換，兩條路徑都在程式碼裡。
+
+### `ORDER_TYPE = "market"`（目前預設）
+
+```
+賣：type=market, quantity = floor(quantity, 6 位小數)
+買：type=market, dollar_amount = floor(dollars, 分位)
+```
+
+允許 fractional 股，精準到 6 位小數，現金完全部署不殘留。代價是無價格保護
+（成交價就是當下 bid/ask）。TQQQ/SGOV 在 regular hours 內 spread <0.1%，
+滑價極小。
+
+### `ORDER_TYPE = "limit"`（備援路徑，可隨時切回）
 
 ```
 sell_limit = floor_cents(bid × (1 − LIMIT_SLIP))
 buy_limit  = ceil_cents (ask × (1 + LIMIT_SLIP))
-sell_shares = floor(quantity)
-buy_shares  = floor(dollars / buy_limit)
+sell_shares = floor(quantity)              # 整數股
+buy_shares  = floor(dollars / buy_limit)   # 整數股
 ```
 
+整數股 + 「最差成交價」保護。代價：不到 1 股的訂單會被跳過，小金額無法部署。
 股數 round 為 0 的單 → 跳過。bid/ask 為 0（盤外）→ 退用 `last_trade_price`。
 
 ---
@@ -48,7 +62,8 @@ buy_shares  = floor(dollars / buy_limit)
 |---|---|---|
 | `UPPER_BAND` | `1.05` | `rebalance.py` |
 | `LOWER_BAND` | `1 / 1.05` ≈ 0.9524 | `rebalance.py` |
-| `LIMIT_SLIP` | `0.005`（0.5%） | `main_bot.py` |
+| `ORDER_TYPE` | `"market"`（預設）/ `"limit"` | `main_bot.py` |
+| `LIMIT_SLIP` | `0.005`（0.5%） | `main_bot.py`（只在 limit 模式用）|
 | 標的 | `TQQQ`, `SGOV` | `rebalance.py` |
 | 帳戶 | `RH_AGENTIC_ACCOUNT` 環境變數（agentic sub-account） | `main_bot.py` + `.env` |
 
@@ -67,3 +82,4 @@ buy_shares  = floor(dollars / buy_limit)
 | 日期 | 變更 |
 |---|---|
 | 2026-06-18 | 初版：1:1、±5% 帶、現金併入 target |
+| 2026-06-19 | 加 `ORDER_TYPE` 切換；預設 `"market"` 支援 fractional 股、現金完全部署；`"limit"` 路徑保留 |

@@ -48,11 +48,18 @@ from rebalance import (
     parse_cash, parse_positions, parse_quotes, render,
 )
 
-# 限價偏移幅度
+# ─── 下單方式切換 ──────────────────────────────────────────
+# "market" → 市價單；允許 fractional 股；對 TQQQ/SGOV 這種高流動性 ETF
+#            在 regular hours 內 spread 通常 < 0.1%，滑價極小。
+#            買用 dollar_amount（精準到分），賣用 quantity（精準到 6 位小數）。
+# "limit"  → 限價單；只能整數股；提供「最差成交價」保護。
+#            < 1 股的訂單會被跳過（無法部署小金額）。
+# 兩條路徑都在程式碼裡，改這個常數就切換，沒有副作用。
+ORDER_TYPE = "market"
+
+# 限價偏移幅度（只在 ORDER_TYPE = "limit" 時用到）
 # 賣單限價 = bid_price × (1 − 0.005)  → 比買方願意付的價低 0.5%
 # 買單限價 = ask_price × (1 + 0.005)  → 比賣方願意收的價高 0.5%
-# 「marketable limit」設計：跨過對方的價，幾乎一定立刻成交，
-# 但限價提供一個「最差成交價」的保護，避免極端 spread 時被坑
 # 0.5% 對 TQQQ/SGOV 這兩支流動性好的標的是寬的（spread 通常 < 0.1%）
 LIMIT_SLIP = Decimal("0.005")
 
@@ -63,12 +70,16 @@ OPEN_ORDER_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_fil
 
 @dataclass
 class ConcreteOrder:
-    """可以真的送給 broker 的訂單。"""
-    side: str               # "buy" or "sell"
+    """可以真的送給 broker 的訂單。
+
+    review_params: 已準備好直接餵給 review_equity_order / place_equity_order
+                   的參數 dict（不含 account_number 和 ref_id）。
+    description:   人讀的描述，例如 "BUY $5.00 of TQQQ @ market"
+    """
+    side: str
     symbol: str
-    quantity: int           # 整數股（fractional 對 limit 單不允許）
-    limit_price: Decimal    # 已 round 到分位
-    notional: Decimal       # quantity × limit_price，純資訊（顯示用）
+    description: str
+    review_params: dict[str, str]
 
 
 def _floor_cents(x: Decimal) -> Decimal:
@@ -81,48 +92,101 @@ def _ceil_cents(x: Decimal) -> Decimal:
     return x.quantize(Decimal("0.01"), rounding=ROUND_UP)
 
 
-def build_concrete_orders(d: Decision, quotes) -> list[ConcreteOrder]:
-    """把 rebalance.decide() 的抽象 orders 轉成可送的整數股限價單。
+def _build_market(o, q) -> tuple[dict, str] | None:
+    """市價單路徑：fractional 可用，無價格保護。回 None 代表跳過。"""
+    common = {
+        "symbol": o.symbol,
+        "type": "market",
+        "market_hours": "regular_hours",  # fractional 規定要 regular hours
+    }
+    if o.side == "sell":
+        assert o.quantity is not None
+        # 賣股數：quantize 到小數點 6 位、無條件捨去（避免賣超）
+        qty = o.quantity.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+        if qty <= 0:
+            return None
+        # 估算成交金額用 bid 推（純顯示用）
+        ref = q.bid_price if q.bid_price > 0 else q.last_trade_price
+        est = qty * ref
+        return (
+            {**common, "side": "sell", "quantity": str(qty)},
+            f"SELL {qty} {o.symbol} @ market  (~${est:,.2f})",
+        )
+    else:
+        assert o.dollars is not None
+        # 買美金：quantize 到分、無條件捨去（避免買超預算）
+        usd = o.dollars.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        if usd <= 0:
+            return None
+        return (
+            {**common, "side": "buy", "dollar_amount": str(usd)},
+            f"BUY  ${usd} of {o.symbol} @ market",
+        )
 
-    賣單：取整數股（floor），限價 = floor_cents(bid × 0.995)
-    買單：限價 = ceil_cents(ask × 1.005)，股數 = floor(預算 / 限價)
-    股數 round 為 0 → 跳過。bid/ask 為 0（盤外）→ 退用 last_trade_price。
+
+def _build_limit(o, q) -> tuple[dict, str] | None:
+    """限價單路徑：只能整數股，有「最差成交價」保護。回 None 代表跳過。"""
+    common = {
+        "symbol": o.symbol,
+        "type": "limit",
+        "time_in_force": "gfd",
+        "market_hours": "regular_hours",
+    }
+    if o.side == "sell":
+        assert o.quantity is not None
+        ref = q.bid_price if q.bid_price > 0 else q.last_trade_price
+        limit = _floor_cents(ref * (Decimal("1") - LIMIT_SLIP))
+        shares = int(o.quantity)  # 整數股 round down
+        if shares <= 0 or limit <= 0:
+            return None
+        return (
+            {**common, "side": "sell", "quantity": str(shares),
+             "limit_price": str(limit)},
+            f"SELL {shares:>5} {o.symbol} @ ${limit} limit  (~${shares * limit:,.2f})",
+        )
+    else:
+        assert o.dollars is not None
+        ref = q.ask_price if q.ask_price > 0 else q.last_trade_price
+        limit = _ceil_cents(ref * (Decimal("1") + LIMIT_SLIP))
+        if limit <= 0:
+            return None
+        shares = int(o.dollars // limit)
+        if shares <= 0:
+            return None
+        return (
+            {**common, "side": "buy", "quantity": str(shares),
+             "limit_price": str(limit)},
+            f"BUY  {shares:>5} {o.symbol} @ ${limit} limit  (~${shares * limit:,.2f})",
+        )
+
+
+def build_concrete_orders(d: Decision, quotes) -> list[ConcreteOrder]:
+    """把 rebalance.decide() 的抽象 orders 轉成可送的 broker 訂單。
+
+    走哪條路徑由 ORDER_TYPE 決定（"market" 或 "limit"）。
+    回傳列表裡可能少於 d.orders（被 builder 跳過的不會進去）。
     """
+    if ORDER_TYPE not in ("market", "limit"):
+        raise ValueError(f"Unknown ORDER_TYPE: {ORDER_TYPE}")
+    builder = _build_market if ORDER_TYPE == "market" else _build_limit
+
     out: list[ConcreteOrder] = []
     for o in d.orders:
-        q = quotes[o.symbol]
-        if o.side == "sell":
-            assert o.quantity is not None
-            ref = q.bid_price if q.bid_price > 0 else q.last_trade_price
-            limit = _floor_cents(ref * (Decimal("1") - LIMIT_SLIP))
-            shares = int(o.quantity)
-            if shares <= 0 or limit <= 0:
-                continue
-            out.append(ConcreteOrder("sell", o.symbol, shares, limit, shares * limit))
-        else:
-            assert o.dollars is not None
-            ref = q.ask_price if q.ask_price > 0 else q.last_trade_price
-            limit = _ceil_cents(ref * (Decimal("1") + LIMIT_SLIP))
-            if limit <= 0:
-                continue
-            shares = int(o.dollars // limit)
-            if shares <= 0:
-                continue
-            out.append(ConcreteOrder("buy", o.symbol, shares, limit, shares * limit))
+        result = builder(o, quotes[o.symbol])
+        if result is None:
+            continue
+        params, desc = result
+        out.append(ConcreteOrder(o.side, o.symbol, desc, params))
     return out
 
 
 def render_concrete(orders: list[ConcreteOrder]) -> str:
     """把具體訂單列表轉成易讀的多行字串。"""
     if not orders:
-        return "No actionable whole-share orders (deltas too small to clear 1 share)."
-    lines = ["Concrete orders (whole shares, marketable limits):"]
+        return f"No actionable orders (ORDER_TYPE={ORDER_TYPE})."
+    lines = [f"Concrete orders (ORDER_TYPE={ORDER_TYPE}):"]
     for o in orders:
-        verb = "SELL" if o.side == "sell" else "BUY "
-        lines.append(
-            f"  {verb} {o.quantity:>5} {o.symbol} @ ${o.limit_price} limit"
-            f"  (~${o.notional:,.2f})"
-        )
+        lines.append(f"  {o.description}")
     return "\n".join(lines)
 
 
@@ -180,11 +244,22 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         print(render_concrete(concrete))
 
         # smoke-review 路徑：合成不會成交的假單，純為了測 review API 串接
-        # main() 已禁止跟 --execute 同時開，這裡不會跟下單路徑混
+        # 注意：smoke-review 一律建限價假單，跟 ORDER_TYPE 設定無關
+        # 因為市價單一定會成交，不能用來測「review-only 不會下單」這件事
+        # main() 已禁止 smoke-review 跟 --execute 同時開
         if smoke_review and not concrete:
             print("\n[--smoke-review] Constructing a no-fill BUY 1 SGOV @ $1.00 to "
                   "verify review_equity_order plumbing.")
-            concrete = [ConcreteOrder("buy", SGOV, 1, Decimal("1.00"), Decimal("1.00"))]
+            concrete = [ConcreteOrder(
+                side="buy",
+                symbol=SGOV,
+                description="BUY 1 SGOV @ $1.00 limit (smoke test, would not fill)",
+                review_params={
+                    "symbol": SGOV, "side": "buy", "type": "limit",
+                    "quantity": "1", "limit_price": "1.00",
+                    "time_in_force": "gfd", "market_hours": "regular_hours",
+                },
+            )]
 
         if not concrete:
             return 0
@@ -198,18 +273,11 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         for o in concrete:
             review_res = await session.call_tool("review_equity_order", {
                 "account_number": account,
-                "symbol": o.symbol,
-                "side": o.side,
-                "type": "limit",
-                "quantity": str(o.quantity),
-                "limit_price": str(o.limit_price),
-                "time_in_force": "gfd",
-                "market_hours": "regular_hours",
+                **o.review_params,
             })
             review_payload = parse_tool_json(review_res)
             has_alerts, alert_str = render_review_alerts(review_payload)
-            verb = "SELL" if o.side == "sell" else "BUY "
-            print(f"  {verb} {o.quantity} {o.symbol} @ ${o.limit_price}:")
+            print(f"  {o.description}:")
             print(alert_str)
 
             # ── 進入下單路徑 ──
@@ -233,13 +301,7 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
             ref_id = str(uuid.uuid4())
             place_res = await session.call_tool("place_equity_order", {
                 "account_number": account,
-                "symbol": o.symbol,
-                "side": o.side,
-                "type": "limit",
-                "quantity": str(o.quantity),
-                "limit_price": str(o.limit_price),
-                "time_in_force": "gfd",
-                "market_hours": "regular_hours",
+                **o.review_params,
                 "ref_id": ref_id,
             })
             place_payload = parse_tool_json(place_res)
