@@ -23,6 +23,13 @@ concurrency:
   group: rebalance
   cancel-in-progress: false
 
+# Workflow 預設的 GITHUB_TOKEN 權限
+# issues: write → 需要才能對「Bot status」issue 留言
+# contents: read → checkout 用
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   rebalance:
     runs-on: ubuntu-latest
@@ -61,6 +68,7 @@ jobs:
       #   - 開放單檢查（重複下單防護）
       #   - review 警示阻擋
       #   - smoke-review 跟 execute 互斥
+      # 把 stdout 同時印到 log 跟存檔（pipefail 確保 bot 失敗時 step 也算失敗）
       - name: Run rebalance
         env:
           RH_AGENTIC_ACCOUNT: ${{ secrets.RH_AGENTIC_ACCOUNT }}
@@ -69,4 +77,57 @@ jobs:
             echo "::error::Secret RH_AGENTIC_ACCOUNT is not set."
             exit 1
           fi
-          uv run main_bot.py --execute
+          set -o pipefail
+          uv run main_bot.py --execute 2>&1 | tee bot_output.log
+
+      # ── 把結果寫進公開 issue ──
+      # if: always() → 不論前面 step 成功或失敗都跑（要在失敗時也留紀錄）
+      # 注意：issue 是公開的，所以只貼「不帶金額/單號」的最小摘要
+      # 完整 log 留在 Actions tab 內，私人可見
+      - name: Post status to issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e  # 這個 step 自己壞了不要傳染失敗狀態
+
+          # 從 log 抽取「能公開的最小資訊」
+          # action：bot 高層動作（hold / rebalance / idle / skipped-open-orders / unknown）
+          if [ -f bot_output.log ] && grep -q "Skipping this cycle" bot_output.log; then
+            ACTION="skipped-open-orders"
+          elif [ -f bot_output.log ] && grep -q "^Action: idle" bot_output.log; then
+            ACTION="idle"
+          elif [ -f bot_output.log ] && grep -q "^Action: hold" bot_output.log; then
+            ACTION="hold"
+          elif [ -f bot_output.log ] && grep -q "^Action: rebalance" bot_output.log; then
+            ACTION="rebalance"
+          else
+            ACTION="unknown"
+          fi
+          # placed：實際下了幾張單（grep PLACED 行數）
+          if [ -f bot_output.log ]; then
+            PLACED=$(grep -c ">>> PLACED" bot_output.log || true)
+          else
+            PLACED=0
+          fi
+
+          NOW_UTC=$(date -u +"%Y-%m-%d %H:%M UTC")
+          NOW_ET=$(TZ=America/New_York date +"%H:%M ET")
+          STATUS="${{ job.status }}"
+          TRIGGER="${{ github.event_name }}"
+
+          # 找有沒有現存的「Bot status」issue（標題完全相符、open 狀態）
+          ISSUE_NUM=$(gh issue list --search 'in:title "Bot status"' --state open \
+                      --json number,title \
+                      --jq '[.[] | select(.title == "Bot status")] | first.number // empty')
+
+          # 沒有就建一個
+          if [ -z "$ISSUE_NUM" ]; then
+            ISSUE_NUM=$(gh issue create \
+              --title "Bot status" \
+              --body $'Automated status updates from `.github/workflows/rebalance.yml`. Each comment = one workflow run.\n\n- **run**: workflow status (success/failure)\n- **action**: bot decision (hold / rebalance / idle / skipped-open-orders / unknown)\n- **placed**: number of orders actually sent to broker\n\n訂閱這個 issue 就會每次跑都收到通知。\n完整 log 看 [Actions tab](../../actions)（不公開）。' \
+              | grep -oE '[0-9]+$')
+          fi
+
+          gh issue comment "$ISSUE_NUM" --body \
+            "**$NOW_UTC** ($NOW_ET) • run: \`$STATUS\` • action: \`$ACTION\` • placed: \`$PLACED\` • trigger: \`$TRIGGER\`"
