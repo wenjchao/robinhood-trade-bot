@@ -1,0 +1,56 @@
+{
+  "data": {
+    "results": [
+      {
+        "quote": {
+          "symbol": "TQQQ",
+          "last_trade_price": "82.920000",
+          "venue_last_trade_time": "2026-06-18T19:59:59.997455141Z",
+          "last_non_reg_trade_price": "82.980000",
+          "venue_last_non_reg_trade_time": "2026-06-18T23:59:51.2936288Z",
+          "adjusted_previous_close": "77.540000",
+          "previous_close": "77.540000",
+          "previous_close_date": "2026-06-17",
+          "bid_price": "82.930000",
+          "venue_bid_time": "2026-06-19T00:00:00.283311352Z",
+          "ask_price": "83.710000",
+          "venue_ask_time": "2026-06-19T00:00:00.283311352Z",
+          "has_traded": true,
+          "state": "active"
+        },
+        "close": {
+          "symbol": "TQQQ",
+          "date": "2026-06-17",
+          "price": "77.54",
+          "interpolated": false,
+          "source": "sip-list-exchange-close"
+        }
+      },
+      {
+        "quote": {
+          "symbol": "SGOV",
+          "last_trade_price": "100.590000",
+          "venue_last_trade_time": "2026-06-18T19:59:59.786360691Z",
+          "last_non_reg_trade_price": "100.598000",
+          "venue_last_non_reg_trade_time": "2026-06-18T23:59:57.830747181Z",
+          "adjusted_previous_close": "100.550000",
+          "previous_close": "100.550000",
+          "previous_close_date": "2026-06-17",
+          "bid_price": "100.590000",
+          "venue_bid_time": "2026-06-19T00:00:00.280222064Z",
+          "ask_price": "100.670000",
+          "venue_ask_time": "2026-06-19T00:00:00.280222064Z",
+          "has_traded": true,
+          "state": "active"
+        },
+        "close": {
+          "symbol": "SGOV",
+          "date": "2026-06-17",
+          "price": "100.55",
+          "interpolated": false,
+          "source": "sip-list-exchange-close"
+        }
+      }
+    ]
+  }
+}

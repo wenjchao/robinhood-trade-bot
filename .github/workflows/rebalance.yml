@@ -1,0 +1,72 @@
+name: TQQQ/SGOV rebalance
+
+# ─── 觸發時機 ─────────────────────────────────────────
+on:
+  schedule:
+    # ⚠️ GitHub cron 用 UTC。下面是美國「夏令時間 (EDT, UTC-4)」對應的時刻。
+    #
+    # DST 轉換時要手動改：
+    #   3 月第二個週日 → EDT 開始（夏令）：用下面的設定
+    #   11 月第一個週日 → EST 開始（冬令）：把每個 cron 的小時欄位 +1
+    #
+    # cron 格式：minute hour day month day_of_week （day_of_week 1=Mon, 5=Fri）
+    - cron: '35 13 * * 1-5'   # 9:35 ET — 開盤後 5 分鐘（讓開盤波動先過）
+    - cron: '30 16 * * 1-5'   # 12:30 ET — 盤中
+    - cron: '55 19 * * 1-5'   # 15:55 ET — 收盤前 5 分鐘
+
+  # 允許從 GitHub UI 手動觸發（測試用、臨時補跑用）
+  workflow_dispatch:
+
+# 防止重疊執行：上一輪還在跑時，新觸發的會排隊等
+# 不是 cancel-in-progress：執行到一半被砍可能下了一半單就掛了
+concurrency:
+  group: rebalance
+  cancel-in-progress: false
+
+jobs:
+  rebalance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5  # 正常 < 30s，超過 5 分鐘表示卡住
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        # v8 起官方不再發浮動的 @v8 major tag，必須用完整版號
+        # 升級時：到 https://github.com/astral-sh/setup-uv/releases 取最新版號
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: uv sync --frozen  # --frozen: 一定用 uv.lock 鎖定的版本
+
+      # ── 注入 OAuth token ──
+      # 把 secret 裡的 base64 字串解碼成 .token.json
+      # base64 避免多行 JSON 的 shell quoting 問題
+      - name: Restore .token.json from secret
+        env:
+          TOKEN_B64: ${{ secrets.RH_TOKEN_JSON_B64 }}
+        run: |
+          if [ -z "$TOKEN_B64" ]; then
+            echo "::error::Secret RH_TOKEN_JSON_B64 is not set. 看 README 的 Phase 3b 設定章節。"
+            exit 1
+          fi
+          echo "$TOKEN_B64" | base64 -d > .token.json
+          chmod 600 .token.json
+
+      # ── 真的執行 ──
+      # --execute 才會送單；main_bot.py 內建：
+      #   - 開放單檢查（重複下單防護）
+      #   - review 警示阻擋
+      #   - smoke-review 跟 execute 互斥
+      - name: Run rebalance
+        env:
+          RH_AGENTIC_ACCOUNT: ${{ secrets.RH_AGENTIC_ACCOUNT }}
+        run: |
+          if [ -z "$RH_AGENTIC_ACCOUNT" ]; then
+            echo "::error::Secret RH_AGENTIC_ACCOUNT is not set."
+            exit 1
+          fi
+          uv run main_bot.py --execute

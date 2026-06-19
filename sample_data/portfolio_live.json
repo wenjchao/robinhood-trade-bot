@@ -1,0 +1,20 @@
+{
+  "data": {
+    "total_value": "10",
+    "equity_value": "0",
+    "options_value": "0",
+    "futures_value": "0",
+    "event_contracts_value": "0",
+    "crypto_value": "0",
+    "cash": "10",
+    "pending_deposits": "0",
+    "mutual_funds_value": "0",
+    "fixed_income_value": "0",
+    "currency": "USD",
+    "buying_power": {
+      "buying_power": "10.0000",
+      "unleveraged_buying_power": "10.0000",
+      "display_currency": "USD"
+    }
+  }
+}

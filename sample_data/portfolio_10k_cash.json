@@ -1,0 +1,13 @@
+{
+  "data": {
+    "total_value": "10000",
+    "equity_value": "0",
+    "cash": "10000",
+    "currency": "USD",
+    "buying_power": {
+      "buying_power": "10000.0000",
+      "unleveraged_buying_power": "10000.0000",
+      "display_currency": "USD"
+    }
+  }
+}
