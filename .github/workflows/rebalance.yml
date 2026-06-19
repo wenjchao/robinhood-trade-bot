@@ -126,7 +126,30 @@ jobs:
           NOW_UTC=$(date -u +"%Y-%m-%d %H:%M UTC")
           NOW_ET=$(TZ=America/New_York date +"%H:%M ET")
           STATUS="${{ job.status }}"
-          TRIGGER="${{ github.event_name }}"
+
+          # 細化 trigger 字串：對 schedule event 加上「是哪條 cron」和「延遲多少」
+          # GH 給的 github.event.schedule 是觸發的 cron 表達式，例如 "35 13 * * 1-5"
+          # 用第 1、2 欄（分、時）當「預定時間」，跟現在 UTC 比較算 delay
+          EV="${{ github.event_name }}"
+          SCHED="${{ github.event.schedule }}"
+          if [ "$EV" = "schedule" ] && [ -n "$SCHED" ]; then
+            S_MIN=$(echo "$SCHED" | awk '{print $1}')
+            S_HR=$(echo "$SCHED" | awk '{print $2}')
+            # 10# 強制十進位（避免 08 被當八進位）
+            A_HR=$((10#$(date -u +%H)))
+            A_MIN_INHR=$((10#$(date -u +%M)))
+            SCHED_MOD=$((S_HR * 60 + S_MIN))
+            ACTUAL_MOD=$((A_HR * 60 + A_MIN_INHR))
+            DELAY=$((ACTUAL_MOD - SCHED_MOD))
+            if [ "$DELAY" -ge 0 ]; then
+              DELAY_STR="+${DELAY}m"
+            else
+              DELAY_STR="${DELAY}m"
+            fi
+            TRIGGER=$(printf 'schedule@%02d:%02d (%s)' "$S_HR" "$S_MIN" "$DELAY_STR")
+          else
+            TRIGGER="$EV"
+          fi
 
           # 找有沒有現存的「Bot status」issue（標題完全相符、open 狀態）
           ISSUE_NUM=$(gh issue list --search 'in:title "Bot status"' --state open \
