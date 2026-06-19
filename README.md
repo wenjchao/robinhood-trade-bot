@@ -55,6 +55,8 @@ trade_bot/
 ├── rebalance.py            ← 【純策略邏輯】吃 JSON 吐決策，不碰網路
 ├── mcp_client.py           ← 【MCP 連線】OAuth、token 快取、session 管理
 ├── main_bot.py             ← 【主程式】串起上面兩個，連 Robinhood 跑一次
+├── local_monitor.py        ← 【本機監看】檢查 GH cron 有沒有跑，缺就 macOS 通知
+├── local_monitor.plist     ← launchd 範本（早上 07:00 Taipei 自動跑監看器）
 │
 ├── sample_data/             ← 測試資料 + 單元測試
 │   ├── test_rebalance.py     ← rebalance.py 的單元測試
@@ -235,6 +237,40 @@ uv run main_bot.py             # 重新瀏覽器授權，產生新 .token.json
 base64 -i .token.json | pbcopy # 複製新 base64
 # 到 GitHub Secrets 更新 RH_TOKEN_JSON_B64 的值
 ```
+
+### 6. 本機監看器（提醒漏跑的 cron）
+
+GH Actions cron 有時整天 skip（已實際遇到）。`local_monitor.py` 跑在你 Mac 上，每天早上 07:00 Taipei 透過 launchd 觸發一次，檢查 Issue #1 昨天交易日的三個時段是否都有 comment——缺的就跳 macOS 原生通知。
+
+**前提**：早上 07:00 Taipei Mac 是開機狀態（你說「過夜開著」即可，不需要 24/7）。Mac 關著就略過那天的檢查（不會誤報，也沒有 GH cron 失敗時的後備執行——只是提醒，不是接管）。
+
+**安裝**：
+
+```bash
+# 1) 從模板產生帶實際路徑的 plist
+sed -e "s|__INSTALL_PATH__|$(pwd)|" -e "s|__UV_PATH__|$(which uv)|" \
+    local_monitor.plist > ~/Library/LaunchAgents/com.tradebot.monitor.plist
+
+# 2) 啟用
+launchctl load -w ~/Library/LaunchAgents/com.tradebot.monitor.plist
+
+# 3) 測試 macOS 通知權限（第一次會跳系統視窗，必須允許）
+uv run local_monitor.py --test
+```
+
+**手動跑一次**（看現在的監看結果）：
+
+```bash
+uv run local_monitor.py
+```
+
+**停用**：
+
+```bash
+launchctl unload -w ~/Library/LaunchAgents/com.tradebot.monitor.plist
+```
+
+Log 在 `/tmp/trade_bot_monitor.log`。
 
 ---
 
