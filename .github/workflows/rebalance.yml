@@ -93,16 +93,17 @@ jobs:
 
           # 從 log 抽取「能公開的最小資訊」
           # action：bot 高層動作（hold / rebalance / idle / skipped-open-orders / unknown）
-          if [ -f bot_output.log ] && grep -q "Skipping this cycle" bot_output.log; then
-            ACTION="skipped-open-orders"
-          elif [ -f bot_output.log ] && grep -q "^Action: idle" bot_output.log; then
-            ACTION="idle"
-          elif [ -f bot_output.log ] && grep -q "^Action: hold" bot_output.log; then
-            ACTION="hold"
-          elif [ -f bot_output.log ] && grep -q "^Action: rebalance" bot_output.log; then
-            ACTION="rebalance"
-          else
-            ACTION="unknown"
+          # 注意：render() 輸出格式是「Action:<多個空格>值」，所以用 awk 抽第二欄
+          ACTION="unknown"
+          if [ -f bot_output.log ]; then
+            if grep -q "Skipping this cycle" bot_output.log; then
+              ACTION="skipped-open-orders"
+            else
+              VAL=$(grep "^Action:" bot_output.log | head -1 | awk '{print $2}')
+              if [ -n "$VAL" ]; then
+                ACTION="$VAL"
+              fi
+            fi
           fi
           # placed：實際下了幾張單（grep PLACED 行數）
           if [ -f bot_output.log ]; then
