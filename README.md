@@ -55,8 +55,10 @@ trade_bot/
 ├── rebalance.py            ← 【純策略邏輯】吃 JSON 吐決策，不碰網路
 ├── mcp_client.py           ← 【MCP 連線】OAuth、token 快取、session 管理
 ├── main_bot.py             ← 【主程式】串起上面兩個，連 Robinhood 跑一次
-├── local_monitor.py        ← 【本機監看】檢查 GH cron 有沒有跑，缺就 macOS 通知
-├── local_monitor.plist     ← launchd 範本（早上 07:00 Taipei 自動跑監看器）
+├── local_runner.sh         ← 【本機備援】GH cron 漏跑時接手執行
+├── local_runner.plist      ← launchd 範本（21:54 / 00:37 / 03:55 Taipei 自動跑）
+├── install.sh              ← 一鍵啟用本機備援
+├── uninstall.sh            ← 一鍵停用本機備援
 │
 ├── sample_data/             ← 測試資料 + 單元測試
 │   ├── test_rebalance.py     ← rebalance.py 的單元測試
@@ -238,39 +240,49 @@ base64 -i .token.json | pbcopy # 複製新 base64
 # 到 GitHub Secrets 更新 RH_TOKEN_JSON_B64 的值
 ```
 
-### 6. 本機監看器（提醒漏跑的 cron）
+### 6. 本機備援執行器（GH cron 漏跑時自己接手）
 
-GH Actions cron 有時整天 skip（已實際遇到）。`local_monitor.py` 跑在你 Mac 上，每天早上 07:00 Taipei 透過 launchd 觸發一次，檢查 Issue #1 昨天交易日的三個時段是否都有 comment——缺的就跳 macOS 原生通知。
+GH Actions cron 不可靠（已實際遇到整天 skip）。`local_runner.sh` 跑在你 Mac 上，每天 launchd 觸發三次，跑 `main_bot.py --execute` 並把結果 post 回 Issue #1（`[local]` 標籤）。
 
-**前提**：早上 07:00 Taipei Mac 是開機狀態（你說「過夜開著」即可，不需要 24/7）。Mac 關著就略過那天的檢查（不會誤報，也沒有 GH cron 失敗時的後備執行——只是提醒，不是接管）。
+**為什麼兩邊都跑也安全**：bot 本身 idempotent（`check_open_orders` + `decide()` = hold 時不下單）。Local 排在 GH backup 後面當「最後一道接手」，做完之後下一個 GH cron 看到狀態已平衡 → hold。Mac 沒開就由 GH 擔綱。
 
-**安裝**：
+**前提**：Mac 在 Taipei 21:54 / 00:37 / 03:55 時段開機。「過夜開著」即可，不需要 24/7。
 
-```bash
-# 1) 從模板產生帶實際路徑的 plist
-sed -e "s|__INSTALL_PATH__|$(pwd)|" -e "s|__UV_PATH__|$(which uv)|" \
-    local_monitor.plist > ~/Library/LaunchAgents/com.tradebot.monitor.plist
-
-# 2) 啟用
-launchctl load -w ~/Library/LaunchAgents/com.tradebot.monitor.plist
-
-# 3) 測試 macOS 通知權限（第一次會跳系統視窗，必須允許）
-uv run local_monitor.py --test
-```
-
-**手動跑一次**（看現在的監看結果）：
+**一鍵啟用**：
 
 ```bash
-uv run local_monitor.py
+bash install.sh
 ```
 
-**停用**：
+之後就自動在 Taipei 21:54 / 00:37 / 03:55 跑。Log 在 `/tmp/trade_bot_runner.log`。
+
+排程設計：
+- 21:54、00:37 = GH backup +12 分鐘，純 backup 角色，避免開盤時段下單
+- 03:55 = 夾在 GH primary 跟 backup 中間，避免被市場 20:00 UTC 關盤截斷
+
+**一鍵停用**：
 
 ```bash
-launchctl unload -w ~/Library/LaunchAgents/com.tradebot.monitor.plist
+bash uninstall.sh
 ```
 
-Log 在 `/tmp/trade_bot_monitor.log`。
+**手動跑一次**（測試）：
+
+```bash
+bash local_runner.sh
+```
+
+**Issue #1 comment 來源辨識**：
+- `[github] ...` = GH Actions 跑的
+- `[local] ...` = 本機跑的
+- 同時段看到兩則 → 兩邊都在工作（local 通常先、GH 看到狀態已平衡顯示 hold）
+- 整時段只看到 `[local]` → GH cron 漏了，local 接手了 ✓
+- 整時段只看到 `[github]` → 你 Mac 關著或漏跑，GH 擔綱 ✓
+- 整時段都沒 → 這個時段沒人跑（下一時段 bot 會重算）
+
+**通知行為**：local 跑出 `placed > 0` 或失敗時才會嗶 macOS 通知（表示 GH 漏了、本機真的有接手）。安靜時就是兩邊都在 hold，正常運作。
+
+**DST 切換**：冬令時間（11 月起）把 `local_runner.plist` 的三個 Hour 欄位 +1，再 `bash install.sh` 重載。
 
 ---
 

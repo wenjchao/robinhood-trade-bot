@@ -165,4 +165,4 @@ jobs:
           fi
 
           gh issue comment "$ISSUE_NUM" --body \
-            "**$NOW_UTC** ($NOW_ET) • run: \`$STATUS\` • action: \`$ACTION\` • placed: \`$PLACED\` • trigger: \`$TRIGGER\`"
+            "**[github] $NOW_UTC** ($NOW_ET) • run: \`$STATUS\` • action: \`$ACTION\` • placed: \`$PLACED\` • trigger: \`$TRIGGER\`"

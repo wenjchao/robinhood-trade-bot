@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+launchd 設定範本。install.sh 會把 __INSTALL_PATH__ 替換成你的實際路徑。
+
+排程：每天三個 Taipei 時間（夏令）
+
+  21:54 Taipei = 13:54 UTC — GH 開盤 backup (13:42) 後 +12 分鐘
+                            等 GH 兩次都沒做事再上場，避開開盤前 5 分鐘的波動。
+  00:37 Taipei = 16:37 UTC — GH 盤中 backup (16:25) 後 +12 分鐘
+                            同上，純 backup 邏輯。
+  03:55 Taipei = 19:55 UTC — GH primary (19:53) 後 +2 分、backup (19:57) 前 -2 分
+                            收盤特例：因為市場 20:00 UTC 關，沒空等 backup 完才上場。
+                            夾在 primary 和 backup 中間：primary 漏 → local 接手；
+                            primary 成功 → local 看到狀態已平衡，安全 hold。
+
+冬令時間（11 月起）：所有小時欄位 +1，然後重跑 bash install.sh。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tradebot.runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__INSTALL_PATH__/local_runner.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__INSTALL_PATH__</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>54</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>0</integer>
+            <key>Minute</key><integer>37</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>3</integer>
+            <key>Minute</key><integer>55</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/trade_bot_runner.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/trade_bot_runner.log</string>
+</dict>
+</plist>
