@@ -69,7 +69,7 @@ LIMIT_SLIP = Decimal("0.005")
 MIN_ORDER_USD = Decimal("1.00")
 
 # Robinhood 訂單 state 屬於「未成交、還在 order book 裡」的狀態
-# 跑前如有任何一張這類單存在於 TQQQ 或 VBIL → 整輪跳過避免重複下單
+# 跑前如有任何一張這類單存在於 SOXL 或 SGOV → 整輪跳過避免重複下單
 OPEN_ORDER_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_filled"}
 
 

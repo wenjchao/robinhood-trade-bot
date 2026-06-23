@@ -2,7 +2,7 @@
 
 用法：
     uv run liquidate.py SYMBOL [SYMBOL ...]
-    # 例：uv run liquidate.py TQQQ VBIL
+    # 例：uv run liquidate.py SOXL SGOV
 
 行為：
   對每個 symbol，先 review_equity_order 看有無 alert，
