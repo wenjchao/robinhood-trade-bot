@@ -1,12 +1,12 @@
 # trade_bot
 
-TQQQ / SGOV 1:1 自動再平衡，透過 Robinhood Agentic Trading MCP。
+TQQQ / VBIL 2:1 自動再平衡，透過 Robinhood Agentic Trading MCP。
 
 ---
 
 ## 這是在做什麼
 
-維持帳戶裡 TQQQ（3 倍槓桿 NASDAQ 100 ETF）和 SGOV（短期美國國債 ETF）的「總值」是 1:1，當比例偏離過大時自動再平衡回去。
+維持帳戶裡 TQQQ（3 倍槓桿 NASDAQ 100 ETF）和 VBIL（Vanguard 0-3 個月短期美國國債 ETF）的「總值」是 2:1，當比例偏離過大時自動再平衡回去。
 
 策略規則的快速摘要請見下面表格；完整的邏輯細節、設計選擇、邊界情況、修改指南，請看 **[rebalance.md](rebalance.md)**。
 
@@ -14,13 +14,13 @@ TQQQ / SGOV 1:1 自動再平衡，透過 Robinhood Agentic Trading MCP。
 
 | 條件 | 動作 |
 |---|---|
-| TQQQ 總值 / SGOV 總值 在 `[0.9524, 1.05]` 內 | 不動（即使帳上有閒置現金也不部署）|
-| 比例 > 1.05 | 賣 TQQQ、買 SGOV |
-| 比例 < 0.9524 | 賣 SGOV、買 TQQQ |
+| TQQQ 總值 / VBIL 總值 在 `[1.905, 2.10]` 內 | 不動（即使帳上有閒置現金也不部署）|
+| 比例 > 2.10 | 賣 TQQQ、買 VBIL |
+| 比例 < 1.905 | 賣 VBIL、買 TQQQ |
 | 任一腿是空的 | 視為「需要再平衡」，把現金一起部署 |
 
-再平衡時兩腿的目標金額 = `(現金 + TQQQ 總值 + SGOV 總值) / 2`。
-也就是說 —— 再平衡會把所有現金一起投入，達到 1:1 後現金歸零。
+再平衡時 TQQQ 的目標金額 = total × 2/3，VBIL 的目標金額 = total × 1/3，total = 現金 + TQQQ + VBIL。
+也就是說 —— 再平衡會把所有現金一起投入，達到 2:1 後現金歸零。
 
 下單方式：預設 **市價單 + fractional 股**（精準部署任何金額）；可在 `main_bot.py` 改 `ORDER_TYPE` 切回限價單模式（整數股 + 「最差成交價」保護）。詳見 [rebalance.md](rebalance.md)。
 
@@ -69,7 +69,7 @@ trade_bot/
 │   ├── positions_empty.json
 │   ├── positions_in_band.json
 │   ├── positions_tqqq_high.json
-│   └── positions_sgov_high.json
+│   └── positions_vbil_high.json
 │
 ├── .env                    ← (你自己建) 帳號等本機設定，chmod 600，已 gitignore
 ├── .token.json             ← (自動產生) OAuth 憑證，chmod 600，已 gitignore
@@ -122,7 +122,7 @@ uv run python -m unittest sample_data.test_rebalance -v
 或手動用樣本資料跑一次：
 
 ```bash
-# 例：TQQQ 過重 + 無現金 → 該賣 TQQQ 買 SGOV
+# 例：TQQQ 過重 + 無現金 → 該賣 TQQQ 買 VBIL
 uv run rebalance.py \
     --positions sample_data/positions_tqqq_high.json \
     --quotes    sample_data/quotes_live.json \
@@ -165,7 +165,7 @@ uv run main_bot.py --execute
 2. 若回傳的 `order_checks` **是空的**（無警示）→ 呼叫 `place_equity_order` 真的送單
 3. 若 `order_checks` **非空**（任何警示）→ 拒絕這張單，印出警示，繼續下一張
 
-**整輪跳過的情況**：執行前若發現 TQQQ 或 SGOV 已有未成交單（state ∈ {new, queued, confirmed, unconfirmed, partially_filled}），整輪不送任何單。這避免 cron 連續觸發時下重複單。
+**整輪跳過的情況**：執行前若發現 TQQQ 或 VBIL 已有未成交單（state ∈ {new, queued, confirmed, unconfirmed, partially_filled}），整輪不送任何單。這避免 cron 連續觸發時下重複單。
 
 **互斥**：`--execute` 跟 `--smoke-review` 不能同時用（argparse 會擋）。
 
@@ -211,7 +211,7 @@ base64 -i .token.json | pbcopy   # macOS 把 base64 字串複製到剪貼簿
 
 #### 步驟 3：測試
 
-到 GitHub repo → **Actions** 頁面 → 選 "TQQQ/SGOV rebalance" → **Run workflow** 手動觸發一次，看 log 是否成功。
+到 GitHub repo → **Actions** 頁面 → 選 "TQQQ/VBIL rebalance" → **Run workflow** 手動觸發一次，看 log 是否成功。
 
 #### DST（日光節約時間）轉換
 
@@ -308,7 +308,7 @@ bash local_runner.sh
 4. **三倍槓桿 TQQQ 提醒**
    - TQQQ 是日重設的 3x 槓桿，長期持有有衰減（volatility decay）
    - 頻繁再平衡會吃稅（短期資本利得）
-   - 1.05 的帶可能太窄，未來可能要調
+   - ±5% 的帶可能太窄，未來可能要調
 
 ---
 

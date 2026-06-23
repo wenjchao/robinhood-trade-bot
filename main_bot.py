@@ -5,7 +5,7 @@
 完整流程：
   1. 從 .env 讀 RH_AGENTIC_ACCOUNT（你的 sub-account 編號）
   2. 用 rh_session() 拿到已登入的 MCP session
-  3. 安全檢查：查 get_equity_orders → 如有 TQQQ/SGOV 的「未成交」單，整輪跳過
+  3. 安全檢查：查 get_equity_orders → 如有 TQQQ/VBIL 的「未成交」單，整輪跳過
      （避免 cron 連續觸發時下重複單）
   4. 抓 get_equity_positions / get_equity_quotes / get_portfolio
   5. 餵 rebalance.decide() 得到抽象計畫
@@ -44,12 +44,12 @@ from dotenv import load_dotenv
 
 from mcp_client import parse_tool_json, rh_session
 from rebalance import (
-    SGOV, TQQQ, Decision, decide,
+    VBIL, TQQQ, Decision, decide,
     parse_cash, parse_positions, parse_quotes, render,
 )
 
 # ─── 下單方式切換 ──────────────────────────────────────────
-# "market" → 市價單；允許 fractional 股；對 TQQQ/SGOV 這種高流動性 ETF
+# "market" → 市價單；允許 fractional 股；對 TQQQ/VBIL 這種高流動性 ETF
 #            在 regular hours 內 spread 通常 < 0.1%，滑價極小。
 #            買用 dollar_amount（精準到分），賣用 quantity（精準到 6 位小數）。
 # "limit"  → 限價單；只能整數股；提供「最差成交價」保護。
@@ -60,11 +60,16 @@ ORDER_TYPE = "market"
 # 限價偏移幅度（只在 ORDER_TYPE = "limit" 時用到）
 # 賣單限價 = bid_price × (1 − 0.005)  → 比買方願意付的價低 0.5%
 # 買單限價 = ask_price × (1 + 0.005)  → 比賣方願意收的價高 0.5%
-# 0.5% 對 TQQQ/SGOV 這兩支流動性好的標的是寬的（spread 通常 < 0.1%）
+# 0.5% 對 TQQQ/VBIL 這兩支流動性好的標的是寬的（spread 通常 < 0.1%）
 LIMIT_SLIP = Decimal("0.005")
 
+# 最小訂單金額（美金）
+# Robinhood market 模式的 dollar_amount 最小為 $1.00（會回 EQUITY_DOLLAR_BASED_MINIMUM_AMOUNT_ERROR）
+# 同時也避免送出 $0.04 這種「在帶內附近的微小調整」白白消耗 review 次數
+MIN_ORDER_USD = Decimal("1.00")
+
 # Robinhood 訂單 state 屬於「未成交、還在 order book 裡」的狀態
-# 跑前如有任何一張這類單存在於 TQQQ 或 SGOV → 整輪跳過避免重複下單
+# 跑前如有任何一張這類單存在於 TQQQ 或 VBIL → 整輪跳過避免重複下單
 OPEN_ORDER_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_filled"}
 
 
@@ -105,9 +110,12 @@ def _build_market(o, q) -> tuple[dict, str] | None:
         qty = o.quantity.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
         if qty <= 0:
             return None
-        # 估算成交金額用 bid 推（純顯示用）
+        # 估算成交金額用 bid 推（純顯示用 + 用來檢查 MIN_ORDER_USD）
         ref = q.bid_price if q.bid_price > 0 else q.last_trade_price
         est = qty * ref
+        # 估算金額太小就跳過，避免送出無意義的微量調整單
+        if est < MIN_ORDER_USD:
+            return None
         return (
             {**common, "side": "sell", "quantity": str(qty)},
             f"SELL {qty} {o.symbol} @ market  (~${est:,.2f})",
@@ -116,7 +124,8 @@ def _build_market(o, q) -> tuple[dict, str] | None:
         assert o.dollars is not None
         # 買美金：quantize 到分、無條件捨去（避免買超預算）
         usd = o.dollars.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-        if usd <= 0:
+        # Broker 強制最小 $1，且我們也不想送無意義微量單
+        if usd < MIN_ORDER_USD:
             return None
         return (
             {**common, "side": "buy", "dollar_amount": str(usd)},
@@ -139,6 +148,9 @@ def _build_limit(o, q) -> tuple[dict, str] | None:
         shares = int(o.quantity)  # 整數股 round down
         if shares <= 0 or limit <= 0:
             return None
+        # 估算金額太小就跳過（雖然限價模式整數股已經自然過濾，仍多保一層）
+        if shares * limit < MIN_ORDER_USD:
+            return None
         return (
             {**common, "side": "sell", "quantity": str(shares),
              "limit_price": str(limit)},
@@ -152,6 +164,8 @@ def _build_limit(o, q) -> tuple[dict, str] | None:
             return None
         shares = int(o.dollars // limit)
         if shares <= 0:
+            return None
+        if shares * limit < MIN_ORDER_USD:
             return None
         return (
             {**common, "side": "buy", "quantity": str(shares),
@@ -199,12 +213,12 @@ def render_review_alerts(payload: dict) -> tuple[bool, str]:
 
 
 async def check_open_orders(session, account: str) -> list[dict]:
-    """查帳戶內 TQQQ/SGOV 的未成交單。回傳 list；空 list 表示安全可下單。"""
+    """查帳戶內 TQQQ/VBIL 的未成交單。回傳 list；空 list 表示安全可下單。"""
     res = await session.call_tool("get_equity_orders", {"account_number": account})
     payload = parse_tool_json(res)
     return [
         o for o in payload.get("data", {}).get("orders", [])
-        if o.get("state") in OPEN_ORDER_STATES and o.get("symbol") in (TQQQ, SGOV)
+        if o.get("state") in OPEN_ORDER_STATES and o.get("symbol") in (TQQQ, VBIL)
     ]
 
 
@@ -215,7 +229,7 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         # 不論是不是 --execute，都先檢查；有的話我們連 review 都不必跑
         open_orders = await check_open_orders(session, account)
         if open_orders:
-            print("Skipping this cycle — open orders exist on TQQQ/SGOV:")
+            print("Skipping this cycle — open orders exist on TQQQ/VBIL:")
             for o in open_orders:
                 print(f"  {o.get('state')}  {o.get('side')} {o.get('quantity')} "
                       f"{o.get('symbol')}  (id {o.get('id')})")
@@ -226,7 +240,7 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         positions_raw = parse_tool_json(await session.call_tool(
             "get_equity_positions", {"account_number": account}))
         quotes_raw = parse_tool_json(await session.call_tool(
-            "get_equity_quotes", {"symbols": [TQQQ, SGOV]}))
+            "get_equity_quotes", {"symbols": [TQQQ, VBIL]}))
         portfolio_raw = parse_tool_json(await session.call_tool(
             "get_portfolio", {"account_number": account}))
 
@@ -248,14 +262,14 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         # 因為市價單一定會成交，不能用來測「review-only 不會下單」這件事
         # main() 已禁止 smoke-review 跟 --execute 同時開
         if smoke_review and not concrete:
-            print("\n[--smoke-review] Constructing a no-fill BUY 1 SGOV @ $1.00 to "
+            print("\n[--smoke-review] Constructing a no-fill BUY 1 VBIL @ $1.00 to "
                   "verify review_equity_order plumbing.")
             concrete = [ConcreteOrder(
                 side="buy",
-                symbol=SGOV,
-                description="BUY 1 SGOV @ $1.00 limit (smoke test, would not fill)",
+                symbol=VBIL,
+                description="BUY 1 VBIL @ $1.00 limit (smoke test, would not fill)",
                 review_params={
-                    "symbol": SGOV, "side": "buy", "type": "limit",
+                    "symbol": VBIL, "side": "buy", "type": "limit",
                     "quantity": "1", "limit_price": "1.00",
                     "time_in_force": "gfd", "market_hours": "regular_hours",
                 },

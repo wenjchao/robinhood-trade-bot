@@ -3,18 +3,18 @@
     "positions": [
       {
         "symbol": "TQQQ",
-        "quantity": "80.000000",
-        "shares_available_for_sells": "80.000000",
+        "quantity": "100.000000",
+        "shares_available_for_sells": "100.000000",
         "intraday_quantity": "0.000000",
         "average_buy_price": "90.000000",
         "type": "long"
       },
       {
-        "symbol": "SGOV",
-        "quantity": "90.000000",
-        "shares_available_for_sells": "90.000000",
+        "symbol": "VBIL",
+        "quantity": "100.000000",
+        "shares_available_for_sells": "100.000000",
         "intraday_quantity": "0.000000",
-        "average_buy_price": "100.000000",
+        "average_buy_price": "75.000000",
         "type": "long"
       }
     ]
