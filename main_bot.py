@@ -5,7 +5,7 @@
 完整流程：
   1. 從 .env 讀 RH_AGENTIC_ACCOUNT（你的 sub-account 編號）
   2. 用 rh_session() 拿到已登入的 MCP session
-  3. 安全檢查：查 get_equity_orders → 如有 TQQQ/VBIL 的「未成交」單，整輪跳過
+  3. 安全檢查：查 get_equity_orders → 如有 SOXL/SGOV 的「未成交」單，整輪跳過
      （避免 cron 連續觸發時下重複單）
   4. 抓 get_equity_positions / get_equity_quotes / get_portfolio
   5. 餵 rebalance.decide() 得到抽象計畫
@@ -44,12 +44,12 @@ from dotenv import load_dotenv
 
 from mcp_client import parse_tool_json, rh_session
 from rebalance import (
-    VBIL, TQQQ, Decision, decide,
+    SGOV, SOXL, Decision, decide,
     parse_cash, parse_positions, parse_quotes, render,
 )
 
 # ─── 下單方式切換 ──────────────────────────────────────────
-# "market" → 市價單；允許 fractional 股；對 TQQQ/VBIL 這種高流動性 ETF
+# "market" → 市價單；允許 fractional 股；對 SOXL/SGOV 這種高流動性 ETF
 #            在 regular hours 內 spread 通常 < 0.1%，滑價極小。
 #            買用 dollar_amount（精準到分），賣用 quantity（精準到 6 位小數）。
 # "limit"  → 限價單；只能整數股；提供「最差成交價」保護。
@@ -60,7 +60,7 @@ ORDER_TYPE = "market"
 # 限價偏移幅度（只在 ORDER_TYPE = "limit" 時用到）
 # 賣單限價 = bid_price × (1 − 0.005)  → 比買方願意付的價低 0.5%
 # 買單限價 = ask_price × (1 + 0.005)  → 比賣方願意收的價高 0.5%
-# 0.5% 對 TQQQ/VBIL 這兩支流動性好的標的是寬的（spread 通常 < 0.1%）
+# 0.5% 對 SOXL/SGOV 這兩支流動性好的標的是寬的（spread 通常 < 0.1%）
 LIMIT_SLIP = Decimal("0.005")
 
 # 最小訂單金額（美金）
@@ -79,7 +79,7 @@ class ConcreteOrder:
 
     review_params: 已準備好直接餵給 review_equity_order / place_equity_order
                    的參數 dict（不含 account_number 和 ref_id）。
-    description:   人讀的描述，例如 "BUY $5.00 of TQQQ @ market"
+    description:   人讀的描述，例如 "BUY $5.00 of SOXL @ market"
     """
     side: str
     symbol: str
@@ -213,12 +213,12 @@ def render_review_alerts(payload: dict) -> tuple[bool, str]:
 
 
 async def check_open_orders(session, account: str) -> list[dict]:
-    """查帳戶內 TQQQ/VBIL 的未成交單。回傳 list；空 list 表示安全可下單。"""
+    """查帳戶內 SOXL/SGOV 的未成交單。回傳 list；空 list 表示安全可下單。"""
     res = await session.call_tool("get_equity_orders", {"account_number": account})
     payload = parse_tool_json(res)
     return [
         o for o in payload.get("data", {}).get("orders", [])
-        if o.get("state") in OPEN_ORDER_STATES and o.get("symbol") in (TQQQ, VBIL)
+        if o.get("state") in OPEN_ORDER_STATES and o.get("symbol") in (SOXL, SGOV)
     ]
 
 
@@ -229,7 +229,7 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         # 不論是不是 --execute，都先檢查；有的話我們連 review 都不必跑
         open_orders = await check_open_orders(session, account)
         if open_orders:
-            print("Skipping this cycle — open orders exist on TQQQ/VBIL:")
+            print("Skipping this cycle — open orders exist on SOXL/SGOV:")
             for o in open_orders:
                 print(f"  {o.get('state')}  {o.get('side')} {o.get('quantity')} "
                       f"{o.get('symbol')}  (id {o.get('id')})")
@@ -240,7 +240,7 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         positions_raw = parse_tool_json(await session.call_tool(
             "get_equity_positions", {"account_number": account}))
         quotes_raw = parse_tool_json(await session.call_tool(
-            "get_equity_quotes", {"symbols": [TQQQ, VBIL]}))
+            "get_equity_quotes", {"symbols": [SOXL, SGOV]}))
         portfolio_raw = parse_tool_json(await session.call_tool(
             "get_portfolio", {"account_number": account}))
 
@@ -262,14 +262,14 @@ async def run(account: str, smoke_review: bool, execute: bool) -> int:
         # 因為市價單一定會成交，不能用來測「review-only 不會下單」這件事
         # main() 已禁止 smoke-review 跟 --execute 同時開
         if smoke_review and not concrete:
-            print("\n[--smoke-review] Constructing a no-fill BUY 1 VBIL @ $1.00 to "
+            print("\n[--smoke-review] Constructing a no-fill BUY 1 SGOV @ $1.00 to "
                   "verify review_equity_order plumbing.")
             concrete = [ConcreteOrder(
                 side="buy",
-                symbol=VBIL,
-                description="BUY 1 VBIL @ $1.00 limit (smoke test, would not fill)",
+                symbol=SGOV,
+                description="BUY 1 SGOV @ $1.00 limit (smoke test, would not fill)",
                 review_params={
-                    "symbol": VBIL, "side": "buy", "type": "limit",
+                    "symbol": SGOV, "side": "buy", "type": "limit",
                     "quantity": "1", "limit_price": "1.00",
                     "time_in_force": "gfd", "market_hours": "regular_hours",
                 },

@@ -19,14 +19,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rebalance import (  # noqa: E402
-    TQQQ, VBIL, decide, parse_cash, parse_positions, parse_quotes,
+    SOXL, SGOV, decide, parse_cash, parse_positions, parse_quotes,
 )
 
 SAMPLES = Path(__file__).parent
 
 # 樣本 quotes_live.json 裡的 last_trade_price（用來算測試的預期值）
-P_TQQQ = 82.62
-P_VBIL = 75.63
+P_SOXL = 229.61
+P_SGOV = 100.60
 
 
 def _load(positions_file: str, portfolio_file: str = "portfolio_no_cash.json",
@@ -48,30 +48,28 @@ class TestDecide(unittest.TestCase):
         self.assertEqual(d.action, "idle")
         self.assertEqual(d.orders, [])
 
-    def test_empty_account_with_cash_deploys_2_to_1(self):
-        """有 $10k 現金、沒持倉 → 買 2/3 TQQQ + 1/3 VBIL。"""
+    def test_empty_account_with_cash_deploys_1_to_1(self):
+        """有 $10k 現金、沒持倉 → 平分買 SOXL + SGOV。"""
         d = _load("positions_empty.json", "portfolio_10k_cash.json")
         self.assertEqual(d.action, "rebalance")
-        # target_tqqq = 10000 × 2/3 ≈ 6666.67
-        # target_vbil = 10000 × 1/3 ≈ 3333.33
-        self.assertAlmostEqual(float(d.target_tqqq), 6666.667, places=2)
-        self.assertAlmostEqual(float(d.target_vbil), 3333.333, places=2)
+        self.assertEqual(d.target_soxl, Decimal("5000"))
+        self.assertEqual(d.target_sgov, Decimal("5000"))
         orders = _orders_by_side(d)
-        self.assertAlmostEqual(float(orders[("buy", TQQQ)].dollars), 6666.667, places=2)
-        self.assertAlmostEqual(float(orders[("buy", VBIL)].dollars), 3333.333, places=2)
-        self.assertNotIn(("sell", TQQQ), orders)
-        self.assertNotIn(("sell", VBIL), orders)
+        self.assertEqual(orders[("buy", SOXL)].dollars, Decimal("5000"))
+        self.assertEqual(orders[("buy", SGOV)].dollars, Decimal("5000"))
+        self.assertNotIn(("sell", SOXL), orders)
+        self.assertNotIn(("sell", SGOV), orders)
 
     def test_in_band_no_cash_holds(self):
-        """比例在 [1.905, 2.10] 帶內、沒現金 → hold。
+        """比例在 [0.9524, 1.05] 帶內、沒現金 → hold。
 
-        200 TQQQ × 82.62 = 16524, 109 VBIL × 75.63 = 8243.67
-        ratio = 16524 / 8243.67 ≈ 2.004 → in band ✓
+        50 SOXL × 229.61 = 11480.50, 114 SGOV × 100.60 = 11468.40
+        ratio ≈ 1.001 → in band ✓
         """
         d = _load("positions_in_band.json", "portfolio_no_cash.json")
         self.assertEqual(d.action, "hold")
-        self.assertGreater(d.ratio, Decimal("1.905"))
-        self.assertLess(d.ratio, Decimal("2.10"))
+        self.assertGreater(d.ratio, Decimal("0.9524"))
+        self.assertLess(d.ratio, Decimal("1.05"))
         self.assertEqual(d.orders, [])
 
     def test_in_band_with_cash_still_holds(self):
@@ -80,42 +78,42 @@ class TestDecide(unittest.TestCase):
         self.assertEqual(d.action, "hold")
         self.assertIn("idle", d.reason.lower())
 
-    def test_tqqq_high_no_cash_sells_tqqq_buys_vbil(self):
-        """TQQQ 過重（ratio > 2.10）、沒現金 → 賣 TQQQ、買 VBIL。
+    def test_soxl_high_no_cash_sells_soxl_buys_sgov(self):
+        """SOXL 過重（ratio > 1.05）、沒現金 → 賣 SOXL、買 SGOV。
 
-        250 TQQQ × 82.62 = 20655, 100 VBIL × 75.63 = 7563
-        ratio = 2.731 → out of band
-        total = 28218, target_tqqq = 18812, target_vbil = 9406
-        sell TQQQ: 20655 - 18812 = 1843 → qty = 1843/82.62 ≈ 22.31
-        buy VBIL: 9406 - 7563 = 1843
+        60 SOXL × 229.61 = 13776.60, 100 SGOV × 100.60 = 10060
+        ratio ≈ 1.369 → out of band
+        total = 23836.60, target = 11918.30 (each)
+        sell SOXL: 13776.60 - 11918.30 = 1858.30 → qty ≈ 8.094
+        buy SGOV: 11918.30 - 10060 = 1858.30
         """
-        d = _load("positions_tqqq_high.json", "portfolio_no_cash.json")
+        d = _load("positions_soxl_high.json", "portfolio_no_cash.json")
         self.assertEqual(d.action, "rebalance")
-        self.assertGreater(d.ratio, Decimal("2.10"))
+        self.assertGreater(d.ratio, Decimal("1.05"))
         orders = _orders_by_side(d)
-        self.assertAlmostEqual(float(orders[("sell", TQQQ)].quantity),
-                               1843.0 / P_TQQQ, places=2)
-        self.assertAlmostEqual(float(orders[("buy", VBIL)].dollars), 1843.0, places=1)
-        self.assertNotIn(("sell", VBIL), orders)
+        self.assertAlmostEqual(float(orders[("sell", SOXL)].quantity),
+                               1858.30 / P_SOXL, places=3)
+        self.assertAlmostEqual(float(orders[("buy", SGOV)].dollars), 1858.30, places=1)
+        self.assertNotIn(("sell", SGOV), orders)
 
-    def test_vbil_high_with_cash_buys_both_no_sell(self):
-        """VBIL 過重（ratio < 1.905）但帳上有 $10k 現金 → 兩腿都買，不用賣。
+    def test_sgov_high_with_cash_buys_both_no_sell(self):
+        """SGOV 過重（ratio < 0.9524）但帳上有 $10k 現金 → 兩腿都買，不用賣。
 
-        100 TQQQ × 82.62 = 8262, 100 VBIL × 75.63 = 7563, cash = 10000
-        ratio = 8262 / 7563 ≈ 1.092 → out of band ✓
-        total = 25825, target_tqqq ≈ 17216.67, target_vbil ≈ 8608.33
-        buy TQQQ: 17216.67 - 8262 ≈ 8954.67
-        buy VBIL: 8608.33 - 7563 ≈ 1045.33
-        sum ≈ 10000 = cash ✓
+        40 SOXL × 229.61 = 9184.40, 100 SGOV × 100.60 = 10060, cash = 10000
+        ratio ≈ 0.913 → out of band ✓
+        total = 29244.40, target = 14622.20 (each)
+        buy SOXL: 14622.20 - 9184.40 = 5437.80
+        buy SGOV: 14622.20 - 10060 = 4562.20
+        sum = 10000 = cash ✓
         """
-        d = _load("positions_vbil_high.json", "portfolio_10k_cash.json")
+        d = _load("positions_sgov_high.json", "portfolio_10k_cash.json")
         self.assertEqual(d.action, "rebalance")
-        self.assertLess(d.ratio, Decimal("1.905"))
+        self.assertLess(d.ratio, Decimal("0.9524"))
         orders = _orders_by_side(d)
-        self.assertAlmostEqual(float(orders[("buy", TQQQ)].dollars), 8954.667, places=2)
-        self.assertAlmostEqual(float(orders[("buy", VBIL)].dollars), 1045.333, places=2)
-        self.assertNotIn(("sell", TQQQ), orders)
-        self.assertNotIn(("sell", VBIL), orders)
+        self.assertAlmostEqual(float(orders[("buy", SOXL)].dollars), 5437.80, places=2)
+        self.assertAlmostEqual(float(orders[("buy", SGOV)].dollars), 4562.20, places=2)
+        self.assertNotIn(("sell", SOXL), orders)
+        self.assertNotIn(("sell", SGOV), orders)
 
 
 if __name__ == "__main__":

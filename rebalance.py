@@ -1,4 +1,4 @@
-"""TQQQ/VBIL 2:1 再平衡演算法 — Phase 1：純邏輯，不碰網路。
+"""SOXL/SGOV 1:1 再平衡演算法 — Phase 1：純邏輯，不碰網路。
 
 這支檔案只負責「決定」：拿到帳戶資料就回傳「該做什麼」。
 不認識 Robinhood、不會送單、不會碰 OAuth。
@@ -8,15 +8,15 @@
 完整的策略文件請見 rebalance.md（跟這支檔案同名，配對閱讀）。
 
 策略規則：
-  1. 永遠維持 TQQQ 總值 : VBIL 總值 = 2:1
-  2. 比例（vt/vs）超出 [TARGET_RATIO / 1.05, TARGET_RATIO × 1.05] 就再平衡
-     ≈ [1.905, 2.10]，等效於「比例偏離目標 ±5%」
+  1. 永遠維持 SOXL 總值 : SGOV 總值 = 1:1
+  2. 比例（vr/vs）超出 [TARGET_RATIO / 1.05, TARGET_RATIO × 1.05] 就再平衡
+     ≈ [0.9524, 1.05]，等效於「比例偏離目標 ±5%」
   3. 任一腿是空的也算「需要再平衡」(初次建倉自動處理)
   4. 再平衡時：
-       target_tqqq = total × 2/3
-       target_vbil = total × 1/3
-     其中 total = 現金 + TQQQ 總值 + VBIL 總值
-     現金在這時會被一起部署 → 達成 2:1 後現金歸零
+       target_soxl = total × 1/2
+       target_sgov = total × 1/2
+     其中 total = 現金 + SOXL 總值 + SGOV 總值
+     現金在這時會被一起部署 → 達成 1:1 後現金歸零
   5. 比例在帶內時，現金不會自動投入（嚴格照使用者規則）
 
 執行範例（搭配 sample_data/ 裡的測試資料）：
@@ -37,26 +37,26 @@ from pathlib import Path
 from typing import Any
 
 # 股票代號常數
-# TQQQ：3 倍槓桿那斯達克 100 ETF（進攻腿）
-# VBIL：Vanguard 0-3 個月短期美國國債 ETF（防守腿）
-TQQQ = "TQQQ"
-VBIL = "VBIL"
+# SOXL：Direxion 3 倍槓桿半導體 ETF（進攻腿）
+# SGOV：iShares 0-3 個月短期美國國債 ETF（防守腿）
+SOXL = "SOXL"
+SGOV = "SGOV"
 
-# 目標市值比 = vt / vs
-TARGET_RATIO = Decimal("2")
+# 目標市值比 = SOXL 值 / SGOV 值
+TARGET_RATIO = Decimal("1")
 
 # 觸發帶：比例偏離目標 ±5%
-# UPPER_BAND: vt/vs > TARGET_RATIO × 1.05 → 觸發，要砍 TQQQ
-# LOWER_BAND: vt/vs < TARGET_RATIO / 1.05 → 觸發，要砍 VBIL
-# 為什麼用 ÷1.05 而非 ×0.95：保持對數對稱
+# UPPER_BAND: vr/vs > TARGET_RATIO × 1.05 → 觸發，要砍 SOXL
+# LOWER_BAND: vr/vs < TARGET_RATIO / 1.05 → 觸發，要砍 SGOV
+# 為什麼用 ÷1.05 而非 ×0.95：保持對數對稱（使用者原始規則「1.05:1 或 1:1.05」)
 BAND_FACTOR = Decimal("1.05")
-UPPER_BAND = TARGET_RATIO * BAND_FACTOR     # = 2.10
-LOWER_BAND = TARGET_RATIO / BAND_FACTOR     # ≈ 1.905
+UPPER_BAND = TARGET_RATIO * BAND_FACTOR     # = 1.05
+LOWER_BAND = TARGET_RATIO / BAND_FACTOR     # ≈ 0.9524
 
 # 目標權重（總值的多少比例分給每一腿）
-# 1 份 + 2 份 = 3 份，所以 TQQQ 占 2/3，VBIL 占 1/3
-WEIGHT_TQQQ = TARGET_RATIO / (TARGET_RATIO + Decimal("1"))   # = 2/3
-WEIGHT_VBIL = Decimal("1") / (TARGET_RATIO + Decimal("1"))   # = 1/3
+# 1:1 比 → 各占一半
+WEIGHT_SOXL = TARGET_RATIO / (TARGET_RATIO + Decimal("1"))   # = 1/2
+WEIGHT_SGOV = Decimal("1") / (TARGET_RATIO + Decimal("1"))   # = 1/2
 
 
 # ─── 資料結構（dataclass，純儲存用） ────────────────────────────────────
@@ -103,12 +103,12 @@ class Decision:
     action: "hold"（不動）/ "rebalance"（要動）/ "idle"（帳戶完全空，沒事做）
     """
     action: str
-    ratio: Decimal | None             # TQQQ總值/VBIL總值；任一腿為 0 時為 None
-    tqqq_value: Decimal
-    vbil_value: Decimal
+    ratio: Decimal | None             # SOXL總值/SGOV總值；任一腿為 0 時為 None
+    soxl_value: Decimal
+    sgov_value: Decimal
     cash: Decimal
-    target_tqqq: Decimal | None       # 再平衡時 TQQQ 的目標金額（total × 2/3）
-    target_vbil: Decimal | None       # 再平衡時 VBIL 的目標金額（total × 1/3）
+    target_soxl: Decimal | None       # 再平衡時 SOXL 的目標金額（total × 1/2）
+    target_sgov: Decimal | None       # 再平衡時 SGOV 的目標金額（total × 1/2）
     orders: list[Order] = field(default_factory=list)
     reason: str = ""
 
@@ -180,24 +180,24 @@ def decide(
     """核心決策函數。輸入帳戶現況，輸出該做什麼。
 
     流程：
-      1. 算出 TQQQ 和 VBIL 各自的「市值」(vt, vs)
+      1. 算出 SOXL 和 SGOV 各自的「市值」(vr, vs)
       2. 判斷是否觸發再平衡（兩腿都 > 0 才看 ratio；任一腿是 0 直接觸發）
       3. 若不觸發 → 回傳 hold
-      4. 若觸發 → 算每腿目標金額（含現金、加上 2:1 權重）→ 產生 sell/buy 計畫
+      4. 若觸發 → 算每腿目標金額（含現金、加上 1:1 權重）→ 產生 sell/buy 計畫
     """
     # 從 positions 字典取股數；沒持倉的代號用 0 處理
-    qt = positions.get(TQQQ, Position(TQQQ, Decimal(0), Decimal(0))).quantity
-    qs = positions.get(VBIL, Position(VBIL, Decimal(0), Decimal(0))).quantity
+    qr = positions.get(SOXL, Position(SOXL, Decimal(0), Decimal(0))).quantity
+    qs = positions.get(SGOV, Position(SGOV, Decimal(0), Decimal(0))).quantity
     # 用最近成交價算「現在的市值」；買賣的限價會在 main_bot.py 另外算
-    pt = quotes[TQQQ].last_trade_price
-    ps = quotes[VBIL].last_trade_price
-    vt = qt * pt   # TQQQ 的當前總值
-    vs = qs * ps   # VBIL 的當前總值
+    pr = quotes[SOXL].last_trade_price
+    ps = quotes[SGOV].last_trade_price
+    vr = qr * pr   # SOXL 的當前總值
+    vs = qs * ps   # SGOV 的當前總值
 
     # 判斷是否觸發再平衡
     # 只有兩腿都 > 0 的時候才能算 ratio（避免除以 0）
-    if vt > 0 and vs > 0:
-        ratio: Decimal | None = vt / vs
+    if vr > 0 and vs > 0:
+        ratio: Decimal | None = vr / vs
         out_of_band = ratio > UPPER_BAND or ratio < LOWER_BAND
     else:
         # 任一腿空 → 視為「需要再平衡」(初次建倉或極端漂移)
@@ -205,8 +205,8 @@ def decide(
         out_of_band = True
 
     # 帳戶完全空（沒股票、沒現金）→ 真的沒事可做
-    if vt + vs + cash == 0:
-        return Decision("idle", None, vt, vs, cash, None, None, [], "Account is empty.")
+    if vr + vs + cash == 0:
+        return Decision("idle", None, vr, vs, cash, None, None, [], "Account is empty.")
 
     # 比例在帶內 → hold
     # 注意：即使帳上有現金，只要兩腿比例在目標附近，按使用者規則就是不動
@@ -216,39 +216,39 @@ def decide(
                   f"(target {TARGET_RATIO}) — no action.")
         if cash > 0:
             reason += f" (Note: ${cash:,.2f} cash sits idle — strategy says don't touch it.)"
-        return Decision("hold", ratio, vt, vs, cash, None, None, [], reason)
+        return Decision("hold", ratio, vr, vs, cash, None, None, [], reason)
 
     # ─── 進入再平衡分支 ───
-    # TQQQ 占 2/3、VBIL 占 1/3 的全部帳戶價值（含現金）
-    # 把 cash 算進去 → 再平衡這一刻，現金全部投入，達成 2:1 後現金歸零
-    total = vt + vs + cash
-    target_tqqq = total * WEIGHT_TQQQ
-    target_vbil = total * WEIGHT_VBIL
+    # SOXL 與 SGOV 各占一半的全部帳戶價值（含現金）
+    # 把 cash 算進去 → 再平衡這一刻，現金全部投入，達成 1:1 後現金歸零
+    total = vr + vs + cash
+    target_soxl = total * WEIGHT_SOXL
+    target_sgov = total * WEIGHT_SGOV
     orders: list[Order] = []
 
-    # TQQQ：跟自己 target 比，太多就賣、太少就買；剛好就不動
-    if vt > target_tqqq:
-        sell_dollars = vt - target_tqqq
-        # sell_dollars / pt = 要賣多少股；整數化／市價/限價在 main_bot.py 處理
-        orders.append(Order("sell", TQQQ, quantity=sell_dollars / pt))
-    elif vt < target_tqqq:
-        orders.append(Order("buy", TQQQ, dollars=target_tqqq - vt))
+    # SOXL：跟自己 target 比，太多就賣、太少就買；剛好就不動
+    if vr > target_soxl:
+        sell_dollars = vr - target_soxl
+        # sell_dollars / pr = 要賣多少股；整數化／市價/限價在 main_bot.py 處理
+        orders.append(Order("sell", SOXL, quantity=sell_dollars / pr))
+    elif vr < target_soxl:
+        orders.append(Order("buy", SOXL, dollars=target_soxl - vr))
 
-    # VBIL：同上邏輯，獨立判斷
-    # 邏輯上 TQQQ 和 VBIL 不可能同時 sell（兩腿都 > target 代表總值算錯）
+    # SGOV：同上邏輯，獨立判斷
+    # 邏輯上 SOXL 和 SGOV 不可能同時 sell（兩腿都 > target 代表總值算錯）
     # 但可能兩腿同時 buy（cash 大到讓兩腿目前都低於 target），或一買一賣
-    if vs > target_vbil:
-        sell_dollars = vs - target_vbil
-        orders.append(Order("sell", VBIL, quantity=sell_dollars / ps))
-    elif vs < target_vbil:
-        orders.append(Order("buy", VBIL, dollars=target_vbil - vs))
+    if vs > target_sgov:
+        sell_dollars = vs - target_sgov
+        orders.append(Order("sell", SGOV, quantity=sell_dollars / ps))
+    elif vs < target_sgov:
+        orders.append(Order("buy", SGOV, dollars=target_sgov - vs))
 
     if ratio is None:
-        reason = f"One or both legs empty — deploy cash to reach {TARGET_RATIO}:1."
+        reason = f"One or both legs empty — deploy cash to reach 1:{TARGET_RATIO}."
     else:
         reason = (f"ratio {ratio:.4f} outside [{LOWER_BAND:.4f}, {UPPER_BAND}] "
-                  f"— rebalance to {TARGET_RATIO}:1.")
-    return Decision("rebalance", ratio, vt, vs, cash, target_tqqq, target_vbil,
+                  f"— rebalance to 1:{TARGET_RATIO}.")
+    return Decision("rebalance", ratio, vr, vs, cash, target_soxl, target_sgov,
                     orders, reason)
 
 
@@ -258,17 +258,17 @@ def render(d: Decision) -> str:
     """把 Decision 轉成方便人看的多行字串。"""
     ratio_str = f"{d.ratio:.4f}" if d.ratio is not None else "n/a"
     lines = [
-        f"TQQQ value:     ${d.tqqq_value:,.2f}",
-        f"VBIL value:     ${d.vbil_value:,.2f}",
+        f"SOXL value:     ${d.soxl_value:,.2f}",
+        f"SGOV value:     ${d.sgov_value:,.2f}",
         f"Cash:           ${d.cash:,.2f}",
-        f"Total:          ${d.tqqq_value + d.vbil_value + d.cash:,.2f}",
-        f"Ratio (T/V):    {ratio_str}  (target {TARGET_RATIO})",
+        f"Total:          ${d.soxl_value + d.sgov_value + d.cash:,.2f}",
+        f"Ratio (R/S):    {ratio_str}  (target {TARGET_RATIO})",
         f"Action:         {d.action}",
         f"Reason:         {d.reason}",
     ]
-    if d.target_tqqq is not None and d.target_vbil is not None:
-        lines.append(f"Target TQQQ:    ${d.target_tqqq:,.2f}")
-        lines.append(f"Target VBIL:    ${d.target_vbil:,.2f}")
+    if d.target_soxl is not None and d.target_sgov is not None:
+        lines.append(f"Target SOXL:    ${d.target_soxl:,.2f}")
+        lines.append(f"Target SGOV:    ${d.target_sgov:,.2f}")
     for o in d.orders:
         if o.side == "sell":
             assert o.quantity is not None
@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--positions", required=True, type=Path,
                     help="JSON from get_equity_positions")
     ap.add_argument("--quotes", required=True, type=Path,
-                    help="JSON from get_equity_quotes (必須含 TQQQ 和 VBIL)")
+                    help="JSON from get_equity_quotes (必須含 SOXL 和 SGOV)")
     ap.add_argument("--portfolio", required=True, type=Path,
                     help="JSON from get_portfolio (用來取現金/買力)")
     args = ap.parse_args(argv)
@@ -297,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     cash = parse_cash(json.loads(args.portfolio.read_text()))
 
     # 安全檢查：兩支股票的報價都必須存在
-    for sym in (TQQQ, VBIL):
+    for sym in (SOXL, SGOV):
         if sym not in quotes:
             print(f"error: quotes file missing {sym}", file=sys.stderr)
             return 2
